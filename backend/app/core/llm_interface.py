@@ -25,7 +25,7 @@ class OpenAIProvider(LLMProvider):
             self.client = AsyncOpenAI(api_key=api_key)
             logger.info("OpenAI client initialized.")
 
-    async def generate(self, prompt: str, model: str = "gpt-3.5-turbo", temperature: float = 0.7, max_tokens: int = 250, **kwargs) -> Optional[str]:
+    async def generate(self, prompt: str, model: str = "gpt-4o-mini", temperature: float = 0.7, max_tokens: int = 250, **kwargs) -> Optional[str]:
         if not self.client:
             logger.error("OpenAI client is not initialized. Cannot generate text.")
             return None

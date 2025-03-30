@@ -16,6 +16,9 @@ class UseItemCommandPayload(BaseCommandPayload):
 class TalkToCommandPayload(BaseCommandPayload):
     npc_id: str = Field(..., description="The ID of the NPC to talk to.")
 
+class ProcessInputPayload(BaseCommandPayload):
+    inputText: str = Field(..., description="The raw text input from the player.")
+
 class IncomingWebSocketMessage(BaseModel):
     command: str = Field(..., description="The name of the command to execute (e.g., LOOK, USE_ITEM, TALK_TO).")
     payload: Dict[str, Any] = Field(default_factory=dict, description="The parameters for the command.")

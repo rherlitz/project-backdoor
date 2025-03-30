@@ -2,8 +2,9 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 import logging
 import json
 from pydantic import ValidationError
+from typing import Optional
 
-from app.models.commands import IncomingWebSocketMessage, OutgoingWebSocketMessage, LookCommandPayload, TalkToCommandPayload
+from app.models.commands import IncomingWebSocketMessage, OutgoingWebSocketMessage, LookCommandPayload, TalkToCommandPayload, ProcessInputPayload
 from app.core.llm_interface import get_llm_provider
 # Import game logic handlers here (to be created)
 # from app.game_logic.command_handlers import handle_look, handle_talk_to
@@ -63,51 +64,19 @@ async def handle_command(websocket: WebSocket, message_data: IncomingWebSocketMe
     logger.info(f"Handling command: {command_name} with payload: {payload}")
 
     try:
-        if command_name == "LOOK":
-            look_payload = LookCommandPayload(**payload)
-            # Basic description for objects for now
-            target_id = look_payload.target
-            description = f"It looks like a {target_id.replace('object_', '').replace('_', ' ')}."
-            if target_id == 'object_terminal':
-                 description += " It seems old but functional."
-                 
-            result = {"description": description}
-            response = OutgoingWebSocketMessage(type="description", payload=result)
-
-        elif command_name == "TALK_TO":
-            talk_payload = TalkToCommandPayload(**payload)
-            npc_id = talk_payload.npc_id
-
-            # --- Basic LLM Dialogue --- 
-            llm = get_llm_provider() # Get default OpenAI provider
-            if not llm:
-                 raise Exception("LLM provider not available.") # Or handle gracefully
-
-            # Very basic prompt - Needs significant improvement!
-            # TODO: Fetch NPC persona, player state, history from DB/config
-            prompt = f"You are {npc_id}. The player character, Dex, just tried to talk to you. Respond briefly in character."
-            if npc_id == "npc_clippy":
-                 prompt = f"You are Clippy-9000, a glitchy, overly helpful AI assistant from the 90s. You sometimes use emoticons like :) or :(. Dex just tried to talk to you. Respond briefly and helpfully, maybe with a bit of glitchiness." 
-            
-            logger.info(f"Sending prompt to LLM for {npc_id}: {prompt}")
-            dialogue_line = await llm.generate(prompt=prompt, model="gpt-3.5-turbo", max_tokens=50)
-            
-            if dialogue_line:
-                 logger.info(f"LLM ({npc_id}) response: {dialogue_line}")
-                 result = {"speaker": npc_id, "line": dialogue_line}
-                 response = OutgoingWebSocketMessage(type="dialogue", payload=result)
-            else:
-                 logger.warning(f"LLM failed to generate dialogue for {npc_id}.")
-                 result = {"speaker": "System", "line": f"({npc_id} doesn't respond.)"}
-                 response = OutgoingWebSocketMessage(type="dialogue", payload=result)
-            # --------------------------
-
-        # elif command_name == "USE_ITEM":
-            # use_payload = UseItemCommandPayload(**payload)
-            # result = await handle_use_item(use_payload)
-            # response = OutgoingWebSocketMessage(type="action_result", payload=result)
-
-        # Add other command handlers here...
+        # --- Command Routing --- 
+        if command_name == "PROCESS_INPUT":
+            process_payload = ProcessInputPayload(**payload)
+            response = await handle_process_input(process_payload.inputText)
+        
+        # --- Keep direct commands temporarily for testing/debugging? (Optional) ---
+        # elif command_name == "LOOK":
+        #     look_payload = LookCommandPayload(**payload)
+        #     response = await handle_direct_look(look_payload) # Create helper
+        # elif command_name == "TALK_TO":
+        #     talk_payload = TalkToCommandPayload(**payload)
+        #     response = await handle_direct_talk(talk_payload) # Create helper
+        # --- End Optional Direct Commands --- 
 
         else:
             logger.warning(f"Unknown command received: {command_name}")
@@ -122,6 +91,121 @@ async def handle_command(websocket: WebSocket, message_data: IncomingWebSocketMe
 
     if response:
         await manager.send_json(response.model_dump(), websocket)
+
+# --- New Handler for PROCESS_INPUT --- 
+async def handle_process_input(inputText: str) -> Optional[OutgoingWebSocketMessage]:
+    """Uses a 'Game Agent' LLM to parse intent and dispatch to specific handlers."""
+    logger.info(f"Processing player input via LLM: '{inputText}'")
+    game_agent_llm = get_llm_provider()
+    if not game_agent_llm:
+        return OutgoingWebSocketMessage(type="error", payload={"message": "Game Agent LLM not available."}) 
+
+    # TODO: Get relevant context (current scene objects, NPCs, player inventory/state from DB)
+    # context = await get_current_game_context() 
+    context_str = "Current context: Player is Dex in his pod. Nearby: npc_clippy, object_terminal."
+    
+    # Define the expected JSON output structure for the Game Agent
+    json_schema = {
+        "type": "object",
+        "properties": {
+            "action": {"type": "string", "enum": ["LOOK", "TALK_TO", "GO", "GET", "USE", "UNKNOWN"]},
+            "target": {"type": "string", "description": "Primary target ID (e.g., npc_clippy, object_terminal, pod_interior) or direction (north, south)."},
+            "parameters": {"type": "object", "description": "Additional parameters, e.g., {'item': 'item_id'} for USE, {'topic': '...'} for TALK_TO."}
+        },
+        "required": ["action"]
+    }
+
+    # Construct the Game Agent prompt
+    game_agent_prompt = f"""
+You are the Game Agent for a retro text adventure game. Analyze the player's input and determine their intended action based on the current context. Output ONLY a JSON object matching the following schema:
+Schema: {json.dumps(json_schema)}
+
+Context: {context_str}
+Player Input: "{inputText}"
+
+Determine the action, target, and any relevant parameters. 
+If the intent is unclear or doesn't match a known action, use action UNKNOWN.
+If talking, try to capture the essence of what the player wants to say in parameters.topic.
+Target should be a known ID from the context if applicable. For looking around, use target 'pod_interior'.
+
+JSON Output:
+"""
+
+    logger.debug(f"Game Agent Prompt:\n{game_agent_prompt}")
+    
+    try:
+        # Use JSON mode if available (check specific provider/model support)
+        # For OpenAI GPT-3.5/4 Turbo (newer versions): response_format={ "type": "json_object" }
+        agent_response_str = await game_agent_llm.generate(
+            prompt=game_agent_prompt, 
+            model="gpt-3.5-turbo", # Or GPT-4 for better results
+            max_tokens=150, 
+            temperature=0.2, # Lower temp for more predictable JSON
+            response_format={ "type": "json_object" } # Request JSON output
+        )
+
+        if not agent_response_str:
+             raise ValueError("Game Agent LLM returned empty response.")
+
+        logger.debug(f"Game Agent Raw Response: {agent_response_str}")
+        agent_action_data = json.loads(agent_response_str) # Parse the JSON string
+
+        # Validate parsed data (basic checks)
+        action = agent_action_data.get('action', 'UNKNOWN').upper()
+        target = agent_action_data.get('target')
+        parameters = agent_action_data.get('parameters', {})
+        logger.info(f"Game Agent Parsed Intent: Action={action}, Target={target}, Params={parameters}")
+
+        # --- Dispatch based on parsed action --- 
+        if action == "LOOK":
+            # TODO: Get description from DB/config or another LLM call
+            look_target = target if target else 'pod_interior' # Default target
+            description = f"[LLM Look] It looks like a {look_target.replace('object_', '').replace('npc_', '')}." 
+            if look_target == 'object_terminal': description += " Seems complex."
+            if look_target == 'npc_clippy': description += " He seems... eager?"
+            return OutgoingWebSocketMessage(type="description", payload={"description": description})
+        
+        elif action == "TALK_TO":
+            npc_id = target
+            if not npc_id or not npc_id.startswith('npc_'):
+                 return OutgoingWebSocketMessage(type="dialogue", payload={"speaker":"System", "line":"Talk to who?"}) 
+            
+            # --- Generate NPC Dialogue --- 
+            npc_llm = get_llm_provider() # Could use a different provider/model per NPC later
+            if not npc_llm: return OutgoingWebSocketMessage(type="error", payload={"message": "NPC LLM not available."}) 
+            
+            # TODO: Get NPC persona, history, player state from DB
+            npc_persona = f"You are {npc_id}. Respond to Dex." 
+            if npc_id == "npc_clippy": npc_persona = "You are Clippy-9000, a glitchy, overly helpful AI assistant. Respond briefly to Dex."
+            
+            conversation_topic = parameters.get('topic', inputText) # Use extracted topic or original input
+            npc_prompt = f"{npc_persona}\nDex says to you: \"{conversation_topic}\"\nYour brief response:"
+            
+            logger.debug(f"NPC ({npc_id}) Prompt: {npc_prompt}")
+            dialogue_line = await npc_llm.generate(prompt=npc_prompt, model="gpt-3.5-turbo", max_tokens=60, temperature=0.7)
+            
+            if dialogue_line:
+                 logger.info(f"NPC ({npc_id}) Response: {dialogue_line}")
+                 return OutgoingWebSocketMessage(type="dialogue", payload={"speaker": npc_id, "line": dialogue_line})
+            else:
+                 logger.warning(f"NPC LLM failed to generate dialogue for {npc_id}.")
+                 return OutgoingWebSocketMessage(type="dialogue", payload={"speaker": "System", "line": f"({npc_id} doesn't respond.)"})
+
+        elif action == "GO":
+             # Movement is client-side, maybe just acknowledge?
+             return OutgoingWebSocketMessage(type="description", payload={"description": f"You head {target}."}) 
+
+        # Add handlers for GET, USE, etc.
+        
+        else: # Handle UNKNOWN or other actions
+             return OutgoingWebSocketMessage(type="description", payload={"description": "You're not sure how to do that."}) 
+
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse JSON response from Game Agent LLM: {agent_response_str}. Error: {e}", exc_info=True)
+        return OutgoingWebSocketMessage(type="error", payload={"message": "Internal error processing command (LLM parse)."})
+    except Exception as e:
+        logger.error(f"Error processing input with Game Agent LLM: {e}", exc_info=True)
+        return OutgoingWebSocketMessage(type="error", payload={"message": "Internal error processing command."}) 
 
 @router.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):

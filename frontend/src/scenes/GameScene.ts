@@ -243,104 +243,38 @@ export default class GameScene extends Phaser.Scene {
     }
 
     private parseAndSendCommand(text: string) {
-        console.log(`Parsing input: "${text}"`);
+        console.log(`Processing input: "${text}"`);
         this.descriptionText.setText(`> ${text}`); // Echo input
         this.stopPlayerMovement(); // Stop player on any command
 
         const words = text.toLowerCase().split(' ').filter(w => w); // Split, lowercase, remove empty
         const verb = words[0] || '';
-        const noun = words.slice(1).join(' ') || ''; // Join remaining words for multi-word nouns
+        const noun = words.slice(1).join(' ') || ''; // Join remaining words
 
-        // --- Basic Command Mapping --- 
-        // This is very rudimentary, needs expansion!
-        let command = '';
-        let payload: any = {};
-
-        switch (verb) {
-            case 'look':
-            case 'examine':
-            case 'l':
-                command = 'LOOK';
-                // Try to map noun to known object/npc IDs
-                payload.target = this.mapNounToTarget(noun || 'area'); // Default to looking at area if no noun
-                break;
-            
-            case 'talk':
-            case 'ask':
-            case 'speak':
-                command = 'TALK_TO';
-                payload.npc_id = this.mapNounToTarget(noun, 'npc'); // Only map to NPCs
-                if (!payload.npc_id) {
-                    this.descriptionText.setText("Talk to who?");
+        // Handle client-side movement first
+        if (['go', 'walk', 'move'].includes(verb)) {
+             let targetX = this.player.x;
+             let targetY = this.player.y;
+             const moveAmount = 100; // Pixels to move
+             switch(noun) {
+                case 'north': case 'n': case 'up': targetY -= moveAmount; break;
+                case 'south': case 's': case 'down': targetY += moveAmount; break;
+                case 'east': case 'e': case 'right': targetX += moveAmount; break;
+                case 'west': case 'w': case 'left': targetX -= moveAmount; break;
+                default: 
+                    this.descriptionText.setText("Go where? (Try north, south, east, west)"); 
                     return;
-                }
-                break;
-
-            // --- Movement commands (Example) ---
-            case 'go':
-            case 'walk':
-            case 'move':
-                 // VERY basic direction mapping - Won't work well without pathfinding/grid
-                 let targetX = this.player.x;
-                 let targetY = this.player.y;
-                 const moveAmount = 100; // Pixels to move
-                 switch(noun) {
-                    case 'north': case 'n': case 'up': targetY -= moveAmount; break;
-                    case 'south': case 's': case 'down': targetY += moveAmount; break;
-                    case 'east': case 'e': case 'right': targetX += moveAmount; break;
-                    case 'west': case 'w': case 'left': targetX -= moveAmount; break;
-                    default: 
-                        this.descriptionText.setText("Go where? (Try north, south, east, west)"); 
-                        return;
-                 }
-                 this.movePlayerTo(targetX, targetY);
-                 return; // Movement handled entirely client-side for now
-
-            // Add more verbs: get, use, open, inventory, etc.
-            
-            default:
-                this.descriptionText.setText(`I don't understand "${verb}".`);
-                return;
+             }
+             this.movePlayerTo(targetX, targetY);
+             return; // Movement handled entirely client-side
         }
 
-        // Send the mapped command if valid
-        if (command) {
-            console.log(`Sending Command: ${command}, Payload:`, payload);
-            webSocketService.sendCommand(command, payload);
-        } else if (verb) { // Only show error if a verb was actually entered
-             this.descriptionText.setText(`Can't do that with "${noun || verb}".`);
+        // For all other commands, send the raw text to the backend
+        if (text) {
+            webSocketService.sendCommand('PROCESS_INPUT', { inputText: text });
+        } else {
+            // Handle empty input if needed, maybe do nothing or show a prompt
+            this.descriptionText.setText(">");
         }
-    }
-
-    private mapNounToTarget(noun: string, typeFilter: 'npc' | 'object' | 'any' = 'any'): string | null {
-         // Simple mapping based on keywords - needs improvement!
-         // Assumes object/npc IDs are like 'npc_clippy', 'object_terminal'
-         const targetNoun = noun.replace('the ', '').trim(); // Remove common articles
-
-         // Known objects/NPCs in the scene (could be fetched from scene data)
-         const knownItems = [
-             { id: 'npc_clippy', keywords: ['clippy', 'paperclip', 'assistant'], type: 'npc' },
-             { id: 'object_terminal', keywords: ['terminal', 'computer', 'screen'], type: 'object' },
-             { id: 'area', keywords: ['area', 'room', 'around', 'here'], type: 'object' } // Special case for looking around
-         ];
-
-         for (const item of knownItems) {
-            if (typeFilter !== 'any' && item.type !== typeFilter) continue; // Skip if type doesn't match filter
-
-            if (item.keywords.includes(targetNoun)) {
-                 // If looking at area, return a generic target ID
-                 return item.id === 'area' ? 'pod_interior' : item.id;
-            }
-         }
-         
-         // If no specific match found when looking, assume 'area'
-         if (typeFilter === 'any' || typeFilter === 'object') {
-            if ([ 'area', 'room', 'around', 'here', '' ].includes(targetNoun)) {
-                 return 'pod_interior'; 
-            }
-         }
-
-         console.log(`Could not map noun "${targetNoun}" to a known target.`);
-         return null; // Or return a default unknown target? 
     }
 } 
