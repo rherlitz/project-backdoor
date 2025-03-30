@@ -6,6 +6,7 @@ export default class GameScene extends Phaser.Scene {
     private player!: Phaser.Types.Physics.Arcade.SpriteWithDynamicBody;
     private clippy!: Phaser.GameObjects.Sprite;
     private playerMoveTween: Phaser.Tweens.Tween | null = null;
+    private parserInput!: HTMLInputElement;
 
     constructor() {
         super('GameScene');
@@ -83,51 +84,73 @@ export default class GameScene extends Phaser.Scene {
         this.clippy = this.add.sprite(this.cameras.main.width * 0.6, this.cameras.main.height * 0.6, 'clippy_sprite');
         this.clippy.setDisplaySize(this.clippy.width * 2, this.clippy.height * 2);
         this.clippy.setInteractive(); // Make NPC clickable
-        // Optional: Add identifier to game object for click handling
         this.clippy.setData('id', 'npc_clippy');
         this.clippy.anims.play('clippy_idle'); // Play idle animation
 
+        // --- Hotspot Setup --- 
+        const terminalHotspot = this.add.rectangle(this.cameras.main.width * 0.8, this.cameras.main.height * 0.5, 50, 70); // x, y, width, height
+        terminalHotspot.setInteractive();
+        terminalHotspot.setData('id', 'object_terminal');
+        // Optional: Make hotspot visible for debugging
+        // terminalHotspot.setStrokeStyle(2, 0xff0000); 
+
+        // List of interactive objects for hit testing
+        const interactiveObjects = [this.clippy, terminalHotspot];
+
         // --- UI Text --- 
         this.descriptionText = this.add.text(10, 10, 'Click to move Dex.', {
-            font: '16px Arial',
+            font: '12px Arial',
             color: '#ffffff',
             backgroundColor: 'rgba(0,0,0,0.5)', // Add background for readability
             padding: { x: 5, y: 3 },
             wordWrap: { width: this.cameras.main.width - 20 }
         }).setOrigin(0).setScrollFactor(0).setDepth(100); // Keep text fixed on screen
 
-        // --- Input Handling --- 
-        this.input.on(Phaser.Input.Events.POINTER_DOWN, (pointer: Phaser.Input.Pointer) => {
-            // Check if the click is on an interactive object (like Clippy)
-            const clickedObject = this.input.manager.hitTest(pointer, [this.clippy], this.cameras.main)[0];
+        // --- Input Handling (Disable Pointer Down) --- 
+        // this.input.on(Phaser.Input.Events.POINTER_DOWN, ... ); // <-- Comment out or remove pointer input handler
 
-            if (clickedObject && clickedObject instanceof Phaser.GameObjects.Sprite && clickedObject.getData('id')) {
-                // Clicked on an interactive object (e.g., NPC)
-                const objectId = clickedObject.getData('id');
-                console.log(`Clicked on interactive object: ${objectId}`);
-                this.descriptionText.setText(`Clicked on ${objectId}. (Interaction TBD)`);
-                // TODO: Send TALK_TO or other interaction command
-                // webSocketService.sendCommand('TALK_TO', { npc_id: objectId }); 
-                // Stop player movement if they were moving
-                this.stopPlayerMovement();
-            } else {
-                 // Clicked on the background - initiate movement
-                console.log(`Pointer down for movement at: (${pointer.worldX}, ${pointer.worldY})`);
-                this.movePlayerTo(pointer.worldX, pointer.worldY);
-                this.descriptionText.setText('Moving...');
+        // --- Text Parser Setup --- 
+        this.parserInput = document.getElementById('parser-input') as HTMLInputElement;
+        if (!this.parserInput) {
+            console.error('Parser input element not found!');
+            return; 
+        }
+
+        // Focus input field initially
+        this.parserInput.focus(); 
+
+        // Add listener for Enter key
+        this.parserInput.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') {
+                const inputText = this.parserInput.value.trim();
+                if (inputText) {
+                    this.parseAndSendCommand(inputText);
+                    this.parserInput.value = ''; // Clear input
+                }
             }
+        });
+
+        // Prevent Phaser from capturing keyboard events while typing
+        this.input.keyboard?.disableGlobalCapture();
+        this.parserInput.addEventListener('focus', () => {
+            this.input.keyboard?.disableGlobalCapture();
+        });
+        this.parserInput.addEventListener('blur', () => {
+            this.input.keyboard?.enableGlobalCapture();
         });
 
         // --- WebSocket Message Handling --- 
         webSocketService.on('description', this.handleDescription, this);
         webSocketService.on('error', this.handleError, this);
-        // Add more listeners for other message types from backend (e.g., 'dialogue', 'npc_move')
+        webSocketService.on('dialogue', this.handleDialogue, this);
+        // Add more listeners for other message types from backend (e.g., 'npc_move')
 
         // Clean up listeners when the scene shuts down
         this.events.on(Phaser.Scenes.Events.SHUTDOWN, () => {
             console.log('GameScene: Shutting down, removing WS listeners');
             webSocketService.off('description', this.handleDescription, this);
             webSocketService.off('error', this.handleError, this);
+            webSocketService.off('dialogue', this.handleDialogue, this);
             this.stopPlayerMovement(); // Stop any movement tweens
         });
 
@@ -204,5 +227,120 @@ export default class GameScene extends Phaser.Scene {
         console.error('Received error from server:', payload.message || payload);
         this.descriptionText.setText(`Error: ${payload.message || 'Unknown server error'}`);
         this.stopPlayerMovement(); // Stop movement on error
+    }
+
+    private handleDialogue(payload: any) {
+        console.log('Received dialogue:', payload);
+        const speaker = payload.speaker || 'System';
+        const line = payload.line || '';
+        
+        // Display dialogue in the description text area for now
+        // TODO: Implement a proper dialogue box UI
+        this.descriptionText.setText(`${speaker}: "${line}"`);
+
+        // Stop player movement when dialogue starts
+        this.stopPlayerMovement(); 
+    }
+
+    private parseAndSendCommand(text: string) {
+        console.log(`Parsing input: "${text}"`);
+        this.descriptionText.setText(`> ${text}`); // Echo input
+        this.stopPlayerMovement(); // Stop player on any command
+
+        const words = text.toLowerCase().split(' ').filter(w => w); // Split, lowercase, remove empty
+        const verb = words[0] || '';
+        const noun = words.slice(1).join(' ') || ''; // Join remaining words for multi-word nouns
+
+        // --- Basic Command Mapping --- 
+        // This is very rudimentary, needs expansion!
+        let command = '';
+        let payload: any = {};
+
+        switch (verb) {
+            case 'look':
+            case 'examine':
+            case 'l':
+                command = 'LOOK';
+                // Try to map noun to known object/npc IDs
+                payload.target = this.mapNounToTarget(noun || 'area'); // Default to looking at area if no noun
+                break;
+            
+            case 'talk':
+            case 'ask':
+            case 'speak':
+                command = 'TALK_TO';
+                payload.npc_id = this.mapNounToTarget(noun, 'npc'); // Only map to NPCs
+                if (!payload.npc_id) {
+                    this.descriptionText.setText("Talk to who?");
+                    return;
+                }
+                break;
+
+            // --- Movement commands (Example) ---
+            case 'go':
+            case 'walk':
+            case 'move':
+                 // VERY basic direction mapping - Won't work well without pathfinding/grid
+                 let targetX = this.player.x;
+                 let targetY = this.player.y;
+                 const moveAmount = 100; // Pixels to move
+                 switch(noun) {
+                    case 'north': case 'n': case 'up': targetY -= moveAmount; break;
+                    case 'south': case 's': case 'down': targetY += moveAmount; break;
+                    case 'east': case 'e': case 'right': targetX += moveAmount; break;
+                    case 'west': case 'w': case 'left': targetX -= moveAmount; break;
+                    default: 
+                        this.descriptionText.setText("Go where? (Try north, south, east, west)"); 
+                        return;
+                 }
+                 this.movePlayerTo(targetX, targetY);
+                 return; // Movement handled entirely client-side for now
+
+            // Add more verbs: get, use, open, inventory, etc.
+            
+            default:
+                this.descriptionText.setText(`I don't understand "${verb}".`);
+                return;
+        }
+
+        // Send the mapped command if valid
+        if (command) {
+            console.log(`Sending Command: ${command}, Payload:`, payload);
+            webSocketService.sendCommand(command, payload);
+        } else if (verb) { // Only show error if a verb was actually entered
+             this.descriptionText.setText(`Can't do that with "${noun || verb}".`);
+        }
+    }
+
+    private mapNounToTarget(noun: string, typeFilter: 'npc' | 'object' | 'any' = 'any'): string | null {
+         // Simple mapping based on keywords - needs improvement!
+         // Assumes object/npc IDs are like 'npc_clippy', 'object_terminal'
+         const targetNoun = noun.replace('the ', '').trim(); // Remove common articles
+
+         // Known objects/NPCs in the scene (could be fetched from scene data)
+         const knownItems = [
+             { id: 'npc_clippy', keywords: ['clippy', 'paperclip', 'assistant'], type: 'npc' },
+             { id: 'object_terminal', keywords: ['terminal', 'computer', 'screen'], type: 'object' },
+             { id: 'area', keywords: ['area', 'room', 'around', 'here'], type: 'object' } // Special case for looking around
+         ];
+
+         for (const item of knownItems) {
+            if (typeFilter !== 'any' && item.type !== typeFilter) continue; // Skip if type doesn't match filter
+
+            if (item.keywords.includes(targetNoun)) {
+                 // If looking at area, return a generic target ID
+                 return item.id === 'area' ? 'pod_interior' : item.id;
+            }
+         }
+         
+         // If no specific match found when looking, assume 'area'
+         if (typeFilter === 'any' || typeFilter === 'object') {
+            if ([ 'area', 'room', 'around', 'here', '' ].includes(targetNoun)) {
+                 return 'pod_interior'; 
+            }
+         }
+
+         console.log(`Could not map noun "${targetNoun}" to a known target.`);
+         return null; // Or return a default unknown target? 
     }
 } 

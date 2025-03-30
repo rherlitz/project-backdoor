@@ -25,7 +25,7 @@ class OpenAIProvider(LLMProvider):
             self.client = AsyncOpenAI(api_key=api_key)
             logger.info("OpenAI client initialized.")
 
-    async def generate(self, prompt: str, model: str = "gpt-3.5-turbo", temperature: float = 0.7, max_tokens: int = 150, **kwargs) -> Optional[str]:
+    async def generate(self, prompt: str, model: str = "gpt-3.5-turbo", temperature: float = 0.7, max_tokens: int = 250, **kwargs) -> Optional[str]:
         if not self.client:
             logger.error("OpenAI client is not initialized. Cannot generate text.")
             return None
@@ -35,7 +35,7 @@ class OpenAIProvider(LLMProvider):
             response = await self.client.chat.completions.create(
                 model=model,
                 messages=[
-                    {"role": "system", "content": "You are a helpful assistant for a retro adventure game."},
+                    {"role": "system", "content": "You are a helpful assistant for a retro adventure game. Make your responses short and concise."},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=temperature,

@@ -13,8 +13,8 @@ class UseItemCommandPayload(BaseCommandPayload):
     target: Optional[str] = Field(None, description="Optional target ID for the item usage (e.g., use key on door).")
 
 # Add other command payload models here as needed...
-# class TalkToCommandPayload(BaseCommandPayload):
-#     npc_id: str = Field(..., description="The ID of the NPC to talk to.")
+class TalkToCommandPayload(BaseCommandPayload):
+    npc_id: str = Field(..., description="The ID of the NPC to talk to.")
 
 class IncomingWebSocketMessage(BaseModel):
     command: str = Field(..., description="The name of the command to execute (e.g., LOOK, USE_ITEM, TALK_TO).")

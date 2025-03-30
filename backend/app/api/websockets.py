@@ -3,9 +3,10 @@ import logging
 import json
 from pydantic import ValidationError
 
-from app.models.commands import IncomingWebSocketMessage, OutgoingWebSocketMessage, LookCommandPayload
+from app.models.commands import IncomingWebSocketMessage, OutgoingWebSocketMessage, LookCommandPayload, TalkToCommandPayload
+from app.core.llm_interface import get_llm_provider
 # Import game logic handlers here (to be created)
-# from app.game_logic.command_handlers import handle_look
+# from app.game_logic.command_handlers import handle_look, handle_talk_to
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -63,13 +64,43 @@ async def handle_command(websocket: WebSocket, message_data: IncomingWebSocketMe
 
     try:
         if command_name == "LOOK":
-            # Validate payload specifically for LOOK
             look_payload = LookCommandPayload(**payload)
-            # --- Placeholder for actual LOOK logic --- 
-            # result = await handle_look(look_payload) # Replace with actual handler call
-            result = {"description": f"You look at {look_payload.target}. It looks like a placeholder description."}
+            # Basic description for objects for now
+            target_id = look_payload.target
+            description = f"It looks like a {target_id.replace('object_', '').replace('_', ' ')}."
+            if target_id == 'object_terminal':
+                 description += " It seems old but functional."
+                 
+            result = {"description": description}
             response = OutgoingWebSocketMessage(type="description", payload=result)
-            # -------------------------------------------
+
+        elif command_name == "TALK_TO":
+            talk_payload = TalkToCommandPayload(**payload)
+            npc_id = talk_payload.npc_id
+
+            # --- Basic LLM Dialogue --- 
+            llm = get_llm_provider() # Get default OpenAI provider
+            if not llm:
+                 raise Exception("LLM provider not available.") # Or handle gracefully
+
+            # Very basic prompt - Needs significant improvement!
+            # TODO: Fetch NPC persona, player state, history from DB/config
+            prompt = f"You are {npc_id}. The player character, Dex, just tried to talk to you. Respond briefly in character."
+            if npc_id == "npc_clippy":
+                 prompt = f"You are Clippy-9000, a glitchy, overly helpful AI assistant from the 90s. You sometimes use emoticons like :) or :(. Dex just tried to talk to you. Respond briefly and helpfully, maybe with a bit of glitchiness." 
+            
+            logger.info(f"Sending prompt to LLM for {npc_id}: {prompt}")
+            dialogue_line = await llm.generate(prompt=prompt, model="gpt-3.5-turbo", max_tokens=50)
+            
+            if dialogue_line:
+                 logger.info(f"LLM ({npc_id}) response: {dialogue_line}")
+                 result = {"speaker": npc_id, "line": dialogue_line}
+                 response = OutgoingWebSocketMessage(type="dialogue", payload=result)
+            else:
+                 logger.warning(f"LLM failed to generate dialogue for {npc_id}.")
+                 result = {"speaker": "System", "line": f"({npc_id} doesn't respond.)"}
+                 response = OutgoingWebSocketMessage(type="dialogue", payload=result)
+            # --------------------------
 
         # elif command_name == "USE_ITEM":
             # use_payload = UseItemCommandPayload(**payload)
