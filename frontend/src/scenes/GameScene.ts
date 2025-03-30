@@ -40,6 +40,7 @@ export default class GameScene extends Phaser.Scene {
         // --- Basic Setup --- 
         const bg = this.add.image(this.cameras.main.centerX, this.cameras.main.centerY, 'pod_interior_bg');
         // Optional: Scale background to fit, maintain aspect ratio might be better depending on art
+        bg.setDisplaySize(bg.width * 2, bg.height * 2);
         // bg.setDisplaySize(this.cameras.main.width, this.cameras.main.height);
 
         // --- Define Animations --- 
@@ -71,18 +72,18 @@ export default class GameScene extends Phaser.Scene {
 
         // --- Player Setup --- 
         // Initial player position (example)
-        const startX = this.cameras.main.width * 0.5;
-        const startY = this.cameras.main.height * 0.6;
-        this.player = this.physics.add.sprite(startX, startY, 'dex_sprite');
+        const spriteScale = 4;
+
+        this.player = this.physics.add.sprite(this.cameras.main.width * 0.5, this.cameras.main.height * 0.8, 'dex_sprite');
         this.player.setCollideWorldBounds(true); // Keep player within screen bounds
         this.player.setInteractive(); // Make player clickable if needed later
-        this.player.setDisplaySize(this.player.width * 2, this.player.height * 2);
+        this.player.setDisplaySize(this.player.width * spriteScale, this.player.height * spriteScale);
         this.player.body.setSize(this.player.width * 0.8, this.player.height * 0.8); // Adjust physics body size if needed
         this.player.anims.play('dex_idle'); // Play idle animation
 
         // --- NPC Setup --- 
         this.clippy = this.add.sprite(this.cameras.main.width * 0.6, this.cameras.main.height * 0.6, 'clippy_sprite');
-        this.clippy.setDisplaySize(this.clippy.width * 2, this.clippy.height * 2);
+        this.clippy.setDisplaySize(this.clippy.width * spriteScale, this.clippy.height * spriteScale);
         this.clippy.setInteractive(); // Make NPC clickable
         this.clippy.setData('id', 'npc_clippy');
         this.clippy.anims.play('clippy_idle'); // Play idle animation
@@ -99,7 +100,7 @@ export default class GameScene extends Phaser.Scene {
 
         // --- UI Text --- 
         this.descriptionText = this.add.text(10, 10, 'Click to move Dex.', {
-            font: '12px Arial',
+            font: '10px Arial',
             color: '#ffffff',
             backgroundColor: 'rgba(0,0,0,0.5)', // Add background for readability
             padding: { x: 5, y: 3 },

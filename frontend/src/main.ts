@@ -5,8 +5,8 @@ import GameScene from './scenes/GameScene';
 
 const config: Phaser.Types.Core.GameConfig = {
   type: Phaser.AUTO, // AUTO tries WebGL first, then Canvas
-  width: 320,       // Base width - can be scaled
-  height: 200,      // Base height - can be scaled
+  width: 640,       // Base width - can be scaled
+  height: 400,      // Base height - can be scaled
   parent: 'game-container', // Matches the div id in index.html
   pixelArt: true,     // Crucial for retro look - disables anti-aliasing
   physics: {        // Enable Arcade Physics

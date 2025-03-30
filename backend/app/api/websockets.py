@@ -106,8 +106,24 @@ async def handle_process_input(inputText: str) -> Optional[OutgoingWebSocketMess
     if "error" in game_context:
          logger.error(f"Failed to get game context: {game_context['error']}")
          return OutgoingWebSocketMessage(type="error", payload={"message": "Failed to understand context."}) 
-    # Convert context to string for the prompt (can be refined)
-    context_str = json.dumps(game_context)
+    
+    # --- Format Context for Prompt --- 
+    player_loc = game_context.get('player_location', 'an unknown place')
+    scene_desc = game_context.get('scene_description', "It's hard to make out any details.")
+    inventory_list = game_context.get('player_inventory', [])
+    inventory_str = "Inventory: " + (", ".join(inventory_list) if inventory_list else "Empty")
+    npcs_in_scene = [npc['id'] for npc in game_context.get('scene_npcs', [])]
+    objects_in_scene = [obj['id'] for obj in game_context.get('scene_objects', [])]
+    npcs_str = "Visible NPCs: " + (", ".join(npcs_in_scene) if npcs_in_scene else "None")
+    objects_str = "Visible Objects: " + (", ".join(objects_in_scene) if objects_in_scene else "None")
+    player_align = game_context.get('player_alignment', 0)
+    
+    # Build context string step-by-step
+    context_str = f"You (Alignment: {player_align}) are in {player_loc}. "
+    context_str += f"{scene_desc} "
+    context_str += f"{npcs_str}. "
+    context_str += f"{objects_str}. "
+    context_str += inventory_str
     
     # Define the expected JSON output structure for the Game Agent
     json_schema = {
@@ -115,7 +131,7 @@ async def handle_process_input(inputText: str) -> Optional[OutgoingWebSocketMess
         "properties": {
             "action": {"type": "string", "enum": ["LOOK", "TALK_TO", "GO", "GET", "USE", "UNKNOWN"]},
             "target": {"type": "string", "description": "Primary target ID (e.g., npc_clippy, object_terminal, pod_interior) or direction (north, south)."},
-            "parameters": {"type": "object", "description": "Additional parameters, e.g., {'item': 'item_id'} for USE, {'topic': '...'} for TALK_TO."}
+            "sentence": {"type": "string", "description": "If the action is TALK_TO, capture the essence of what the player wants to say here."}
         },
         "required": ["action"]
     }
@@ -128,10 +144,10 @@ Schema: {json.dumps(json_schema)}
 Context: {context_str}
 Player Input: "{inputText}"
 
-Determine the action, target, and any relevant parameters. 
+Determine the action, target, and the sentence if the action is TALK_TO. 
 If the intent is unclear or doesn't match a known action, use action UNKNOWN.
-If talking, try to capture the essence of what the player wants to say in parameters.topic.
-Target should be a known ID from the context if applicable. For looking around, use target 'pod_interior'.
+If talking, try to capture the essence of what the player wants to say in the 'sentence' property.
+Target should be a known ID from the context if applicable. For looking around, use target 'player_loc'.
 
 JSON Output:
 """
@@ -158,44 +174,30 @@ JSON Output:
         # Validate parsed data (basic checks)
         action = agent_action_data.get('action', 'UNKNOWN').upper()
         target = agent_action_data.get('target')
-        parameters = agent_action_data.get('parameters', {})
-        logger.info(f"Game Agent Parsed Intent: Action={action}, Target={target}, Params={parameters}")
+        sentence = agent_action_data.get('sentence', {})
+        logger.info(f"Game Agent Parsed Intent: Action={action}, Target={target}, Sentence={sentence}")
 
         # --- Dispatch based on parsed action --- 
-        if action == "LOOK":
-            # TODO: Use get_object_data / get_npc_data / get_scene_data for better descriptions
-            look_target = target if target else game_context.get('player_location', 'unknown_location') 
-            # Basic description generation
-            description = f"You look at the {look_target.replace('object_', '').replace('npc_', '')}." 
-            # Add more detail based on fetched data later
-            return OutgoingWebSocketMessage(type="description", payload={"description": description})
-        
-        elif action == "TALK_TO":
+        if action == "TALK_TO":
             npc_id = target
             if not npc_id or not npc_id.startswith('npc_'):
-                 return OutgoingWebSocketMessage(type="dialogue", payload={"speaker":"System", "line":"Talk to who?"}) 
+                 logger.warning(f"TALK_TO action parsed, but target '{target}' is not a valid NPC ID.")
+                 return OutgoingWebSocketMessage(type="dialogue", payload={"speaker":"System", "line":"Talk to who exactly?"}) 
             
             # --- Generate NPC Dialogue --- 
             npc_llm = get_llm_provider() 
             if not npc_llm: return OutgoingWebSocketMessage(type="error", payload={"message": "NPC LLM not available."}) 
-            
-            # Fetch NPC data from DB
             npc_data = await get_npc_data(npc_id)
             if not npc_data:
-                logger.error(f"NPC data not found for {npc_id}")
-                return OutgoingWebSocketMessage(type="dialogue", payload={"speaker":"System", "line": f"You can't talk to {npc_id}."})
-            
+                 logger.error(f"NPC data not found for {npc_id}")
+                 return OutgoingWebSocketMessage(type="dialogue", payload={"speaker":"System", "line": f"You can't talk to {npc_id}."})
             npc_persona = npc_data['persona']
             npc_memory = npc_data['memory']
-            # Simple history string for now
             short_term_history = "\n".join(npc_memory.get('short_term', []))
             medium_term_summary = "\n".join(npc_memory.get('medium_term', []))
             
-            conversation_topic = parameters.get('topic', inputText) # Use extracted topic or original input
-            
-            # Construct NPC prompt with context
+            # *** Pass original inputText to NPC prompt ***
             npc_prompt = f"""Persona: {npc_persona}
-
 Relevant Facts/Memory:
 {medium_term_summary}
 
@@ -204,33 +206,61 @@ Recent Conversation Snippets:
 
 Current Situation: Dex (the player, alignment: {game_context.get('player_alignment')}) is in {game_context.get('player_location')} with you.
 
-Dex says to you: "{conversation_topic}"
+Dex says to you: "{sentence if sentence else inputText}"  # Use parsed sentence if available, otherwise original input
 
 Your brief, in-character response:
 """ 
             
-            logger.debug(f"NPC ({npc_id}) Prompt:\n{npc_prompt}")
+            logger.info(f"NPC ({npc_id}) Prompt:\n{npc_prompt}")
             dialogue_line = await npc_llm.generate(prompt=npc_prompt, model="gpt-4o-mini", max_tokens=150, temperature=0.75)
             
             if dialogue_line:
                  logger.info(f"NPC ({npc_id}) Response: {dialogue_line}")
-                 # Update NPC memory
-                 interaction_record = f"Dex said: \"{conversation_topic}\" / You responded: \"{dialogue_line}\""
-                 await update_npc_memory(npc_id, interaction_record) # TODO: Add LLM-based summarization later
-                 
+                 interaction_record = f'Dex said: "{inputText}" / You responded: "{dialogue_line}"'
+                 await update_npc_memory(npc_id, interaction_record)
                  return OutgoingWebSocketMessage(type="dialogue", payload={"speaker": npc_id, "line": dialogue_line})
             else:
                  logger.warning(f"NPC LLM failed to generate dialogue for {npc_id}.")
                  return OutgoingWebSocketMessage(type="dialogue", payload={"speaker": "System", "line": f"({npc_id} doesn't respond.)"})
-
-        elif action == "GO":
-             # Movement is client-side, maybe just acknowledge?
-             return OutgoingWebSocketMessage(type="description", payload={"description": f"You head {target}."}) 
-
-        # Add handlers for GET, USE, etc.
         
-        else: # Handle UNKNOWN or other actions
-             return OutgoingWebSocketMessage(type="description", payload={"description": "You're not sure how to do that."}) 
+        # --- Use World Simulator LLM for Other Actions --- 
+        else: 
+            # Construct prompt for the World Simulator/Narrator LLM
+            # Give it the parsed action/target AND the original text
+            result_prompt = f"""You are the Narrator/World Simulator for a retro adventure game.
+Context: {context_str}
+Player Intent (parsed): Action={action}, Target={target}
+Original Player Input: "{inputText}" # Provide original input for detail
+
+Describe the outcome of the player's intended action based on their original input and the context. 
+- Use the Original Player Input to understand specifics (e.g., if they said 'look at the bed', describe the bed).
+- If the parsed Action is LOOK, describe the most relevant object/area mentioned in the Original Player Input within the context.
+- If the parsed Action is GET/USE, describe the attempt based on the Original Player Input.
+- If the Action is UNKNOWN, explain why the Original Player Input doesn't make sense.
+- Respond concisely (1-3 sentences) in a narrative style.
+- Do not actually change the game state, just describe.
+
+Narrator's Description:
+"""
+            logger.debug(f"World Simulator Result Prompt:\n{result_prompt}")
+            
+            world_sim_llm = get_llm_provider() 
+            if not world_sim_llm:
+                 return OutgoingWebSocketMessage(type="error", payload={"message": "World Sim LLM not available."}) 
+                 
+            narration = await world_sim_llm.generate(
+                 prompt=result_prompt, 
+                 model="gpt-4o-mini", # Use a capable model
+                 max_tokens=100, 
+                 temperature=0.6
+            )
+            
+            if not narration:
+                 narration = "Nothing seems to happen." # Fallback
+            
+            # TODO: Actual state updates based on action/target would go here in the future
+                 
+            return OutgoingWebSocketMessage(type="description", payload={"description": narration})
 
     except json.JSONDecodeError as e:
         logger.error(f"Failed to parse JSON response from Game Agent LLM: {agent_response_str}. Error: {e}", exc_info=True)
