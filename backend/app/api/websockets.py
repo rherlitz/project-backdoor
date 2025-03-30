@@ -6,6 +6,7 @@ from typing import Optional
 
 from app.models.commands import IncomingWebSocketMessage, OutgoingWebSocketMessage, LookCommandPayload, TalkToCommandPayload, ProcessInputPayload
 from app.core.llm_interface import get_llm_provider
+from app.utils.game_state import get_current_game_context, get_npc_data, update_npc_memory
 # Import game logic handlers here (to be created)
 # from app.game_logic.command_handlers import handle_look, handle_talk_to
 
@@ -100,9 +101,13 @@ async def handle_process_input(inputText: str) -> Optional[OutgoingWebSocketMess
     if not game_agent_llm:
         return OutgoingWebSocketMessage(type="error", payload={"message": "Game Agent LLM not available."}) 
 
-    # TODO: Get relevant context (current scene objects, NPCs, player inventory/state from DB)
-    # context = await get_current_game_context() 
-    context_str = "Current context: Player is Dex in his pod. Nearby: npc_clippy, object_terminal."
+    # --- Get Game Context from DB --- 
+    game_context = await get_current_game_context()
+    if "error" in game_context:
+         logger.error(f"Failed to get game context: {game_context['error']}")
+         return OutgoingWebSocketMessage(type="error", payload={"message": "Failed to understand context."}) 
+    # Convert context to string for the prompt (can be refined)
+    context_str = json.dumps(game_context)
     
     # Define the expected JSON output structure for the Game Agent
     json_schema = {
@@ -135,11 +140,11 @@ JSON Output:
     
     try:
         # Use JSON mode if available (check specific provider/model support)
-        # For OpenAI GPT-3.5/4 Turbo (newer versions): response_format={ "type": "json_object" }
+        # For OpenAI 4o-mini (newer versions): response_format={ "type": "json_object" }
         agent_response_str = await game_agent_llm.generate(
             prompt=game_agent_prompt, 
-            model="gpt-3.5-turbo", # Or GPT-4 for better results
-            max_tokens=150, 
+            model="gpt-4o-mini", # Or GPT-4 for better results
+            max_tokens=250, 
             temperature=0.2, # Lower temp for more predictable JSON
             response_format={ "type": "json_object" } # Request JSON output
         )
@@ -158,11 +163,11 @@ JSON Output:
 
         # --- Dispatch based on parsed action --- 
         if action == "LOOK":
-            # TODO: Get description from DB/config or another LLM call
-            look_target = target if target else 'pod_interior' # Default target
-            description = f"[LLM Look] It looks like a {look_target.replace('object_', '').replace('npc_', '')}." 
-            if look_target == 'object_terminal': description += " Seems complex."
-            if look_target == 'npc_clippy': description += " He seems... eager?"
+            # TODO: Use get_object_data / get_npc_data / get_scene_data for better descriptions
+            look_target = target if target else game_context.get('player_location', 'unknown_location') 
+            # Basic description generation
+            description = f"You look at the {look_target.replace('object_', '').replace('npc_', '')}." 
+            # Add more detail based on fetched data later
             return OutgoingWebSocketMessage(type="description", payload={"description": description})
         
         elif action == "TALK_TO":
@@ -171,21 +176,48 @@ JSON Output:
                  return OutgoingWebSocketMessage(type="dialogue", payload={"speaker":"System", "line":"Talk to who?"}) 
             
             # --- Generate NPC Dialogue --- 
-            npc_llm = get_llm_provider() # Could use a different provider/model per NPC later
+            npc_llm = get_llm_provider() 
             if not npc_llm: return OutgoingWebSocketMessage(type="error", payload={"message": "NPC LLM not available."}) 
             
-            # TODO: Get NPC persona, history, player state from DB
-            npc_persona = f"You are {npc_id}. Respond to Dex." 
-            if npc_id == "npc_clippy": npc_persona = "You are Clippy-9000, a glitchy, overly helpful AI assistant. Respond briefly to Dex."
+            # Fetch NPC data from DB
+            npc_data = await get_npc_data(npc_id)
+            if not npc_data:
+                logger.error(f"NPC data not found for {npc_id}")
+                return OutgoingWebSocketMessage(type="dialogue", payload={"speaker":"System", "line": f"You can't talk to {npc_id}."})
+            
+            npc_persona = npc_data['persona']
+            npc_memory = npc_data['memory']
+            # Simple history string for now
+            short_term_history = "\n".join(npc_memory.get('short_term', []))
+            medium_term_summary = "\n".join(npc_memory.get('medium_term', []))
             
             conversation_topic = parameters.get('topic', inputText) # Use extracted topic or original input
-            npc_prompt = f"{npc_persona}\nDex says to you: \"{conversation_topic}\"\nYour brief response:"
             
-            logger.debug(f"NPC ({npc_id}) Prompt: {npc_prompt}")
-            dialogue_line = await npc_llm.generate(prompt=npc_prompt, model="gpt-3.5-turbo", max_tokens=60, temperature=0.7)
+            # Construct NPC prompt with context
+            npc_prompt = f"""Persona: {npc_persona}
+
+Relevant Facts/Memory:
+{medium_term_summary}
+
+Recent Conversation Snippets:
+{short_term_history}
+
+Current Situation: Dex (the player, alignment: {game_context.get('player_alignment')}) is in {game_context.get('player_location')} with you.
+
+Dex says to you: "{conversation_topic}"
+
+Your brief, in-character response:
+""" 
+            
+            logger.debug(f"NPC ({npc_id}) Prompt:\n{npc_prompt}")
+            dialogue_line = await npc_llm.generate(prompt=npc_prompt, model="gpt-4o-mini", max_tokens=150, temperature=0.75)
             
             if dialogue_line:
                  logger.info(f"NPC ({npc_id}) Response: {dialogue_line}")
+                 # Update NPC memory
+                 interaction_record = f"Dex said: \"{conversation_topic}\" / You responded: \"{dialogue_line}\""
+                 await update_npc_memory(npc_id, interaction_record) # TODO: Add LLM-based summarization later
+                 
                  return OutgoingWebSocketMessage(type="dialogue", payload={"speaker": npc_id, "line": dialogue_line})
             else:
                  logger.warning(f"NPC LLM failed to generate dialogue for {npc_id}.")

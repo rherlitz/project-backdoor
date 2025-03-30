@@ -101,4 +101,130 @@ async def update_player_state_db(new_state: PlayerState):
         await db.rollback()
         raise # Reraise to indicate failure
 
+# --- Data Fetching Functions --- 
+
+async def get_scene_data(scene_id: str) -> Optional[dict]:
+    """Fetches scene description and details."""
+    db = await get_db_connection()
+    try:
+        async with db.cursor() as cursor:
+            await cursor.execute("SELECT description, details_json FROM scenes WHERE scene_id = ?", (scene_id,))
+            row = await cursor.fetchone()
+            if row:
+                return {
+                    "description": row["description"],
+                    "details": json.loads(row["details_json"])
+                }
+            return None
+    except Exception as e:
+        logger.error(f"Failed to get scene data for {scene_id}: {e}", exc_info=True)
+        return None
+
+async def get_npc_data(npc_id: str) -> Optional[dict]:
+    """Fetches NPC persona, state, and memory."""
+    db = await get_db_connection()
+    try:
+        async with db.cursor() as cursor:
+            await cursor.execute("SELECT persona, state_json, memory_json FROM npcs WHERE npc_id = ?", (npc_id,))
+            row = await cursor.fetchone()
+            if row:
+                return {
+                    "persona": row["persona"],
+                    "state": json.loads(row["state_json"]),
+                    "memory": json.loads(row["memory_json"])
+                }
+            return None
+    except Exception as e:
+        logger.error(f"Failed to get NPC data for {npc_id}: {e}", exc_info=True)
+        return None
+
+async def get_object_data(object_id: str) -> Optional[dict]:
+    """Fetches object description and state."""
+    db = await get_db_connection()
+    try:
+        async with db.cursor() as cursor:
+            await cursor.execute("SELECT description, state_json FROM objects WHERE object_id = ?", (object_id,))
+            row = await cursor.fetchone()
+            if row:
+                return {
+                    "description": row["description"],
+                    "state": json.loads(row["state_json"])
+                }
+            return None
+    except Exception as e:
+        logger.error(f"Failed to get object data for {object_id}: {e}", exc_info=True)
+        return None
+
+async def update_npc_memory(npc_id: str, interaction: str, summary: Optional[str] = None):
+    """Updates NPC short-term and optionally medium-term memory."""
+    db = await get_db_connection()
+    try:
+        async with db.cursor() as cursor:
+            # Fetch current memory
+            await cursor.execute("SELECT memory_json FROM npcs WHERE npc_id = ?", (npc_id,))
+            row = await cursor.fetchone()
+            if not row:
+                 logger.error(f"NPC {npc_id} not found for memory update.")
+                 return
+            
+            memory = json.loads(row["memory_json"])
+            # Add to short term (capped list)
+            memory["short_term"] = ([interaction] + memory.get("short_term", []))[:10] # Prepend and cap at 10
+            # Add summary to medium term if provided
+            if summary:
+                memory["medium_term"] = memory.get("medium_term", []) + [summary]
+            
+            # Update memory in DB
+            await cursor.execute("UPDATE npcs SET memory_json = ? WHERE npc_id = ?", (json.dumps(memory), npc_id))
+            await db.commit()
+            logger.debug(f"Updated memory for {npc_id}")
+            
+    except Exception as e:
+        logger.error(f"Failed to update memory for {npc_id}: {e}", exc_info=True)
+        await db.rollback()
+
+# --- Context Gathering Function --- 
+async def get_current_game_context() -> dict:
+    """Gathers relevant context for the Game Agent LLM."""
+    player_state = await get_player_state_db()
+    if not player_state:
+        return {"error": "Player state not found"}
+
+    scene_data = await get_scene_data(player_state.location)
+    if not scene_data:
+        return {"error": f"Scene data not found for {player_state.location}"}
+
+    context = {
+        "player_location": player_state.location,
+        "player_inventory": player_state.inventory,
+        "player_alignment": player_state.flags.alignment_score,
+        "scene_description": scene_data["description"],
+        "scene_npcs": [],
+        "scene_objects": []
+    }
+
+    # Fetch details for NPCs in the scene
+    for npc_id in scene_data["details"].get("npcs", []):
+        npc_data = await get_npc_data(npc_id)
+        if npc_data:
+            context["scene_npcs"].append({
+                "id": npc_id,
+                # Include key state aspects for context, not full persona/memory here
+                "state": npc_data["state"]
+            })
+
+    # Fetch details for objects in the scene
+    for object_id in scene_data["details"].get("objects", []):
+        # Exclude items already in player inventory from scene object list
+        if object_id in player_state.inventory: continue 
+        obj_data = await get_object_data(object_id)
+        if obj_data:
+            context["scene_objects"].append({
+                "id": object_id,
+                "description": obj_data["description"],
+                "state": obj_data["state"]
+            })
+            
+    return context
+
 # --- TODO: Add functions for NPC state, object state, etc. --- 

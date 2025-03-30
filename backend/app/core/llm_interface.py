@@ -35,7 +35,7 @@ class OpenAIProvider(LLMProvider):
             response = await self.client.chat.completions.create(
                 model=model,
                 messages=[
-                    {"role": "system", "content": "You are a helpful assistant for a retro adventure game. Make your responses short and concise."},
+#                    {"role": "system", "content": "You are a helpful assistant for a retro adventure game. Make your responses short and concise."},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=temperature,
