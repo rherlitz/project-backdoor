@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" /> <!-- Replace with game icon -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Project: Backdoor</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+        background-color: #222;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        min-height: 100vh;
+        overflow: hidden; /* Prevent scrollbars */
+      }
+      canvas {
+        display: block;
+        /* Ensure crisp pixels for pixel art */
+        image-rendering: -moz-crisp-edges;
+        image-rendering: -webkit-crisp-edges;
+        image-rendering: pixelated;
+        image-rendering: crisp-edges;
+      }
+      /* Style for potential overlay UI elements (dialogue box, inventory) */
+      #ui-overlay {
+          position: absolute;
+          top: 0;
+          left: 0;
+          width: 100%;
+          height: 100%;
+          pointer-events: none; /* Allow clicks to pass through to canvas by default */
+          /* Add styles for UI elements here later */
+      }
+    </style>
+  </head>
+  <body>
+    <div id="game-container"></div>
+    <div id="ui-overlay">
+      <!-- UI elements like dialogue boxes will go here -->
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html> 
