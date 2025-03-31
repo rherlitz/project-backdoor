@@ -16,6 +16,8 @@ export default class GameScene extends Phaser.Scene {
         console.log('GameScene: preload');
         // Load game assets here (backgrounds, sprites, etc.)
         this.load.image('pod_interior_bg', 'assets/images/backgrounds/pod_interior.png');
+        this.load.image('pod_exterior_bg', 'assets/images/backgrounds/pod_exterior.png');
+        this.load.image('alley_bg', 'assets/images/backgrounds/alley.png');
 
         // !! IMPORTANT: Replace frameWidth/frameHeight with your actual frame dimensions !!
         const dexFrameWidth = 25;  // <-- Replace with actual width of one Dex frame
