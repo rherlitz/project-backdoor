@@ -269,7 +269,7 @@ export default class GameScene extends Phaser.Scene {
                     return;
              }
              this.movePlayerTo(targetX, targetY);
-             return; // Movement handled entirely client-side
+ //            return; // Movement handled entirely client-side
         }
 
         // For all other commands, send the raw text to the backend

@@ -6,7 +6,7 @@ from typing import Optional
 
 from app.models.commands import IncomingWebSocketMessage, OutgoingWebSocketMessage, LookCommandPayload, TalkToCommandPayload, ProcessInputPayload
 from app.core.llm_interface import get_llm_provider
-from app.utils.game_state import get_current_game_context, get_npc_data, update_npc_memory
+from app.utils.game_state import get_current_game_context, get_npc_data, update_npc_memory, handle_movement
 # Import game logic handlers here (to be created)
 # from app.game_logic.command_handlers import handle_look, handle_talk_to
 
@@ -95,8 +95,45 @@ async def handle_command(websocket: WebSocket, message_data: IncomingWebSocketMe
 
 # --- New Handler for PROCESS_INPUT --- 
 async def handle_process_input(inputText: str) -> Optional[OutgoingWebSocketMessage]:
-    """Uses a 'Game Agent' LLM to parse intent and dispatch to specific handlers."""
-    logger.info(f"Processing player input via LLM: '{inputText}'")
+    """Processes player input. First checks for explicit movement commands, 
+       then uses a 'Game Agent' LLM to parse intent and dispatch to other handlers."""
+    logger.info(f"Processing player input: '{inputText}'")
+
+    # --- 1. Check for Explicit Movement Commands --- 
+    cleaned_input = inputText.lower().strip()
+    parts = cleaned_input.split()
+    valid_directions = ["north", "south", "east", "west"]
+    # Also allow common synonyms like 'n', 's', 'e', 'w'
+    direction_map = { 'n': 'north', 's': 'south', 'e': 'east', 'w': 'west' } 
+
+    if len(parts) == 2 and parts[0] in ["go", "move", "walk"] and (parts[1] in valid_directions or parts[1] in direction_map):
+        direction = direction_map.get(parts[1], parts[1]) # Normalize short directions
+        logger.info(f"Detected direct movement command: go {direction}")
+        movement_result = await handle_movement(direction)
+
+        if movement_result.get("success"):
+            if movement_result.get("scene_change"): 
+                # Send scene change message
+                return OutgoingWebSocketMessage(
+                    type="scene_change",
+                    payload={
+                        "new_scene_id": movement_result["new_scene_id"],
+                        "new_description": movement_result["new_scene_description"]
+                    }
+                )
+            else:
+                 # This case shouldn't happen with current handle_movement, but handle defensively
+                 logger.warning("handle_movement reported success but no scene change?")
+                 return OutgoingWebSocketMessage(type="description", payload={"description": "You moved, but somehow ended up in the same place?"}) 
+        else:
+            # Send failure message (e.g., "You can't go that way", "You bump into the wall")
+            return OutgoingWebSocketMessage(
+                type="description", 
+                payload={"description": movement_result.get("message", "You can't move that way.")}
+            )
+
+    # --- 2. If not movement, proceed to LLM Intent Parsing --- 
+    logger.info(f"Input '{inputText}' not direct movement, proceeding to LLM parsing.")
     game_agent_llm = get_llm_provider()
     if not game_agent_llm:
         return OutgoingWebSocketMessage(type="error", payload={"message": "Game Agent LLM not available."}) 
@@ -118,14 +155,13 @@ async def handle_process_input(inputText: str) -> Optional[OutgoingWebSocketMess
     objects_str = "Visible Objects: " + (", ".join(objects_in_scene) if objects_in_scene else "None")
     player_align = game_context.get('player_alignment', 0)
     
-    # Build context string step-by-step
     context_str = f"You (Alignment: {player_align}) are in {player_loc}. "
     context_str += f"{scene_desc} "
     context_str += f"{npcs_str}. "
     context_str += f"{objects_str}. "
     context_str += inventory_str
-    
-    # Define the expected JSON output structure for the Game Agent
+
+    # --- Define JSON Schema & Construct Prompt for LLM --- 
     json_schema = {
         "type": "object",
         "properties": {
@@ -135,8 +171,6 @@ async def handle_process_input(inputText: str) -> Optional[OutgoingWebSocketMess
         },
         "required": ["action"]
     }
-
-    # Construct the Game Agent prompt
     game_agent_prompt = f"""
 You are the Game Agent for a retro text adventure game. Analyze the player's input and determine their intended action based on the current context. Output ONLY a JSON object matching the following schema:
 Schema: {json.dumps(json_schema)}
@@ -155,30 +189,46 @@ JSON Output:
     logger.debug(f"Game Agent Prompt:\n{game_agent_prompt}")
     
     try:
-        # Use JSON mode if available (check specific provider/model support)
-        # For OpenAI 4o-mini (newer versions): response_format={ "type": "json_object" }
+        # --- Call LLM --- 
         agent_response_str = await game_agent_llm.generate(
-            prompt=game_agent_prompt, 
-            model="gpt-4o-mini", # Or GPT-4 for better results
-            max_tokens=250, 
-            temperature=0.2, # Lower temp for more predictable JSON
-            response_format={ "type": "json_object" } # Request JSON output
+            prompt=game_agent_prompt, model="gpt-4o-mini", max_tokens=250, temperature=0.2,
+            response_format={ "type": "json_object" }
         )
-
-        if not agent_response_str:
-             raise ValueError("Game Agent LLM returned empty response.")
-
+        if not agent_response_str: raise ValueError("Game Agent LLM returned empty response.")
         logger.debug(f"Game Agent Raw Response: {agent_response_str}")
-        agent_action_data = json.loads(agent_response_str) # Parse the JSON string
+        agent_action_data = json.loads(agent_response_str)
 
-        # Validate parsed data (basic checks)
+        # --- Validate & Parse LLM Response --- 
         action = agent_action_data.get('action', 'UNKNOWN').upper()
         target = agent_action_data.get('target')
         sentence = agent_action_data.get('sentence', {})
         logger.info(f"Game Agent Parsed Intent: Action={action}, Target={target}, Sentence={sentence}")
 
         # --- Dispatch based on parsed action --- 
-        if action == "TALK_TO":
+        
+        # *** NEW: Handle GO action parsed by LLM ***
+        if action == "GO":
+            direction = str(target).lower() # Target should be the direction
+            if direction in valid_directions or direction in direction_map:
+                direction = direction_map.get(direction, direction)
+                logger.info(f"Handling LLM-parsed movement command: go {direction}")
+                movement_result = await handle_movement(direction)
+                # (Same result handling as direct movement check above)
+                if movement_result.get("success"):
+                    if movement_result.get("scene_change"): 
+                        return OutgoingWebSocketMessage(type="scene_change", payload={
+                            "new_scene_id": movement_result["new_scene_id"],
+                            "new_description": movement_result["new_scene_description"]
+                        })
+                    else:
+                         return OutgoingWebSocketMessage(type="description", payload={"description": "You moved, but somehow ended up in the same place?"}) 
+                else:
+                    return OutgoingWebSocketMessage(type="description", payload={"description": movement_result.get("message", "You can't move that way.")})
+            else:
+                logger.warning(f"LLM parsed GO action, but target '{target}' is not a valid direction.")
+                return OutgoingWebSocketMessage(type="description", payload={"description": f"Go where? '{target}' isn't a direction I understand."}) 
+
+        elif action == "TALK_TO":
             npc_id = target
             if not npc_id or not npc_id.startswith('npc_'):
                  logger.warning(f"TALK_TO action parsed, but target '{target}' is not a valid NPC ID.")
@@ -223,7 +273,7 @@ Your brief, in-character response:
                  logger.warning(f"NPC LLM failed to generate dialogue for {npc_id}.")
                  return OutgoingWebSocketMessage(type="dialogue", payload={"speaker": "System", "line": f"({npc_id} doesn't respond.)"})
         
-        # --- Use World Simulator LLM for Other Actions --- 
+        # --- Use World Simulator LLM for Other Actions (LOOK, GET, USE, UNKNOWN) --- 
         else: 
             # Construct prompt for the World Simulator/Narrator LLM
             # Give it the parsed action/target AND the original text
@@ -263,11 +313,18 @@ Narrator's Description:
             return OutgoingWebSocketMessage(type="description", payload={"description": narration})
 
     except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse JSON response from Game Agent LLM: {agent_response_str}. Error: {e}", exc_info=True)
-        return OutgoingWebSocketMessage(type="error", payload={"message": "Internal error processing command (LLM parse)."})
+        logger.error(f"Failed to parse JSON response from Game Agent LLM: {agent_response_str} - Error: {e}")
+        return OutgoingWebSocketMessage(type="error", payload={"message": "The game agent gave a confusing response. Try rephrasing?"})
+    except ValueError as e:
+         logger.error(f"ValueError during LLM processing: {e}")
+         return OutgoingWebSocketMessage(type="error", payload={"message": f"Error processing command: {e}"})
     except Exception as e:
-        logger.error(f"Error processing input with Game Agent LLM: {e}", exc_info=True)
-        return OutgoingWebSocketMessage(type="error", payload={"message": "Internal error processing command."}) 
+        logger.error(f"Unexpected error processing input: {e}", exc_info=True)
+        return OutgoingWebSocketMessage(type="error", payload={"message": "An unexpected error occurred."})
+
+    # Fallback if no specific response was generated earlier (should ideally not happen)
+    logger.warning("handle_process_input reached end without generating a response.")
+    return OutgoingWebSocketMessage(type="description", payload={"description": "Nothing seems to happen."}) 
 
 @router.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -275,29 +332,22 @@ async def websocket_endpoint(websocket: WebSocket):
     try:
         while True:
             data = await websocket.receive_text()
-            logger.debug(f"Raw message from {websocket.client}: {data}")
+            logger.debug(f"Received raw data: {data}")
             try:
-                # Parse the incoming JSON data
-                message_json = json.loads(data)
-                # Validate the structure
-                incoming_message = IncomingWebSocketMessage(**message_json)
-                # Handle the command
-                await handle_command(websocket, incoming_message)
-
-            except json.JSONDecodeError:
-                logger.error(f"Received non-JSON message from {websocket.client}: {data}")
-                await manager.send_json(OutgoingWebSocketMessage(type="error", payload={"message": "Invalid message format. Expected JSON."}).model_dump(), websocket)
+                message = IncomingWebSocketMessage.model_validate_json(data)
+                await handle_command(websocket, message)
             except ValidationError as e:
-                logger.error(f"Invalid message structure from {websocket.client}: {e}")
-                await manager.send_json(OutgoingWebSocketMessage(type="error", payload={"message": f"Invalid message structure: {e.errors()}"}).model_dump(), websocket)
+                logger.error(f"WebSocket validation error: {e.errors()} for data: {data}")
+                await manager.send_json({"type": "error", "payload": {"message": f"Invalid message format: {e.errors()}"}}, websocket)
+            except json.JSONDecodeError:
+                 logger.error(f"WebSocket received non-JSON data: {data}")
+                 await manager.send_json({"type": "error", "payload": {"message": "Invalid message format received."}}, websocket)
             except Exception as e:
-                 logger.error(f"Unexpected error processing message from {websocket.client}: {e}", exc_info=True)
-                 await manager.send_json(OutgoingWebSocketMessage(type="error", payload={"message": "Internal server error processing message."}).model_dump(), websocket)
-
+                 logger.error(f"Error processing WebSocket message: {e}", exc_info=True)
+                 await manager.send_json({"type": "error", "payload": {"message": "An internal error occurred."}}, websocket)
     except WebSocketDisconnect:
         manager.disconnect(websocket)
-        logger.info(f"Client {websocket.client} disconnected")
     except Exception as e:
-        logger.error(f"Error in WebSocket connection with {websocket.client}: {e}", exc_info=True)
-        # Ensure disconnect is called even on unexpected errors
+        # Catch potential errors during receive_text if connection drops abruptly
+        logger.error(f"Unhandled exception in WebSocket connection: {e}", exc_info=True)
         manager.disconnect(websocket) 

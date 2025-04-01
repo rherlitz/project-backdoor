@@ -1,0 +1,50 @@
+{
+    "pod_interior": {
+      "description": "You are inside a cramped, metallic pod. Wires hang loosely from the ceiling, and various dormant screens line the walls. The main hatch is to the east.",
+      "details": {
+        "exits": {
+          "east": "pod_exterior" 
+        },
+        "allowed_directions": ["east", "west"] 
+      }
+    },
+    "pod_exterior": {
+      "description": "You stand on dusty, reddish ground just outside the crashed pod. The sky is a hazy orange. Paths seem to lead north, south, east, and west into the surrounding barren landscape.",
+      "details": {
+        "exits": {
+          "north": "north_terrain",
+          "south": "south_terrain",
+          "east": "east_terrain",
+          "west": "pod_interior" 
+        },
+         "allowed_directions": ["north", "south", "east", "west"]
+      }
+    },
+    "north_terrain": {
+      "description": "Rocky cliffs rise to the north. The ground here is uneven and difficult to traverse. The only clear path is back south.",
+      "details": {
+        "exits": {
+          "south": "pod_exterior"
+        },
+         "allowed_directions": ["north", "south"] 
+      }
+    },
+      "south_terrain": {
+      "description": "A vast expanse of shifting red sand stretches southwards. It looks treacherous. The way back north seems safer.",
+      "details": {
+        "exits": {
+          "north": "pod_exterior"
+        },
+         "allowed_directions": ["north", "south"] 
+      }
+    },
+      "east_terrain": {
+      "description": "Strange, crystalline flora sprouts from the ground to the east. They hum faintly. A path leads back west.",
+      "details": {
+        "exits": {
+          "west": "pod_exterior"
+        },
+         "allowed_directions": ["east", "west"] 
+      }
+    }
+  }

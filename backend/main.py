@@ -5,25 +5,28 @@ import logging
 
 from app.api import websockets as ws_router
 # Updated imports for SQLite
-from app.core.sqlite_client import initialize_database, close_db_connection, get_db_connection
-from app.utils.game_state import initialize_player_state_db # Renamed function
+from app.core.sqlite_client import close_db_connection, get_db_connection
+from app.utils.game_state import initialize_player_state_db # No longer needed here
+# Corrected import path
+from app.core.sqlite_client import initialize_database as initialize_db_schema_and_data # Import the new initializer
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: Initialize SQLite DB connection, schema, and game state
-    logger.info("Initializing SQLite database connection...")
-    db = await get_db_connection() # Establish connection first
+    # Startup: Initialize SQLite DB connection, ensure schema, and load static data
+    logger.info("Establishing SQLite database connection...")
+    # Ensure connection is ready before initializing schema/data
+    _ = await get_db_connection() # Call to establish if not already done
     logger.info("Database connection established.")
 
-    logger.info("Initializing database schema...")
-    await initialize_database() # Create tables if they don't exist
-    logger.info("Database schema initialization complete.")
+    logger.info("Initializing database schema and loading static data...")
+    await initialize_db_schema_and_data() # Call the consolidated function
+    logger.info("Database initialization complete.")
 
-    logger.info("Initializing game state in DB...")
-    await initialize_player_state_db() # Populate initial player data (will be updated)
+    logger.info("Initializing game state in DB...") # This is now handled by ensure_schema defaults
+    await initialize_player_state_db() # Removed separate call
     logger.info("Game state initialization check complete.")
 
     yield
