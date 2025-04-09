@@ -5,6 +5,7 @@ export default class GameScene extends Phaser.Scene {
     private descriptionText!: Phaser.GameObjects.Text;
     private player!: Phaser.Types.Physics.Arcade.SpriteWithDynamicBody;
     private clippy!: Phaser.GameObjects.Sprite;
+    private background!: Phaser.GameObjects.Image;
     private playerMoveTween: Phaser.Tweens.Tween | null = null;
     private parserInput!: HTMLInputElement;
 
@@ -14,9 +15,15 @@ export default class GameScene extends Phaser.Scene {
 
     preload() {
         console.log('GameScene: preload');
+        // Load scene configuration
+        this.load.json('sceneConfig', 'assets/data/scenes_config.json');
+
         // Load game assets here (backgrounds, sprites, etc.)
-        this.load.image('pod_interior_bg', 'assets/images/backgrounds/pod_interior.png');
-        this.load.image('pod_exterior_bg', 'assets/images/backgrounds/pod_exterior.png');
+        this.load.image('bg_pod_interior', 'assets/images/backgrounds/pod_interior.png');
+        this.load.image('bg_pod_exterior', 'assets/images/backgrounds/pod_exterior.png');
+        this.load.image('bg_north_terrain', 'assets/images/backgrounds/north_terrain.png');
+        this.load.image('bg_south_terrain', 'assets/images/backgrounds/south_terrain.png');
+        this.load.image('bg_east_terrain', 'assets/images/backgrounds/east_terrain.png');
         this.load.image('alley_bg', 'assets/images/backgrounds/alley.png');
 
         // !! IMPORTANT: Replace frameWidth/frameHeight with your actual frame dimensions !!
@@ -40,10 +47,13 @@ export default class GameScene extends Phaser.Scene {
         console.log('GameScene: create');
 
         // --- Basic Setup --- 
-        const bg = this.add.image(this.cameras.main.centerX, this.cameras.main.centerY, 'pod_interior_bg');
+        this.background = this.add.image(this.cameras.main.centerX, this.cameras.main.centerY, 'bg_pod_interior');
         // Optional: Scale background to fit, maintain aspect ratio might be better depending on art
-        bg.setDisplaySize(bg.width * 2, bg.height * 2);
-        // bg.setDisplaySize(this.cameras.main.width, this.cameras.main.height);
+        const scaleX = this.cameras.main.width / this.background.width;
+        const scaleY = this.cameras.main.height / this.background.height;
+        const scale = Math.min(scaleX, scaleY);
+        this.background.setScale(scale);
+        this.background.setPosition(this.cameras.main.centerX, this.cameras.main.centerY);
 
         // --- Define Animations --- 
         // Dex animations (4x2 spritesheet = 8 frames total, 0-7)
@@ -69,11 +79,15 @@ export default class GameScene extends Phaser.Scene {
             repeat: -1
         });
 
-        // Set world bounds and make it same as the bg
-        this.physics.world.setBounds(0, 0, bg.width, bg.height);
+        // Set world bounds and make it same as the scaled bg
+        const scaledWidth = this.background.width * this.background.scaleX;
+        const scaledHeight = this.background.height * this.background.scaleY;
+        const bgTopLeftX = this.cameras.main.centerX - scaledWidth / 2;
+        const bgTopLeftY = this.cameras.main.centerY - scaledHeight / 2;
+        this.physics.world.setBounds(bgTopLeftX, bgTopLeftY, scaledWidth, scaledHeight);
 
         // --- Player Setup --- 
-        // Initial player position (example)
+        // Initial player position (example - place near center bottom)
         const spriteScale = 4;
 
         this.player = this.physics.add.sprite(this.cameras.main.width * 0.5, this.cameras.main.height * 0.8, 'dex_sprite');
@@ -146,6 +160,7 @@ export default class GameScene extends Phaser.Scene {
         webSocketService.on('description', this.handleDescription, this);
         webSocketService.on('error', this.handleError, this);
         webSocketService.on('dialogue', this.handleDialogue, this);
+        webSocketService.on('scene_change', this.handleSceneChange, this);
         // Add more listeners for other message types from backend (e.g., 'npc_move')
 
         // Clean up listeners when the scene shuts down
@@ -154,6 +169,7 @@ export default class GameScene extends Phaser.Scene {
             webSocketService.off('description', this.handleDescription, this);
             webSocketService.off('error', this.handleError, this);
             webSocketService.off('dialogue', this.handleDialogue, this);
+            webSocketService.off('scene_change', this.handleSceneChange, this);
             this.stopPlayerMovement(); // Stop any movement tweens
         });
 
@@ -188,7 +204,6 @@ export default class GameScene extends Phaser.Scene {
             ease: 'Linear',
             onComplete: () => {
                 this.stopPlayerMovement(false); // Ensure body stops on tween complete
-                this.descriptionText.setText('Arrived. Click to move again.');
             },
             onUpdate: () => {
                  // Optional: Update player velocity based on tween direction for physics interactions
@@ -214,35 +229,72 @@ export default class GameScene extends Phaser.Scene {
         }
     }
 
-    private handleDescription(payload: any) {
-        console.log('Received description:', payload.description);
-        // Only update if not currently moving (to avoid overwriting movement status)
-        if (!this.playerMoveTween || !this.playerMoveTween.isPlaying()) {
-             if (payload.description) {
-                 this.descriptionText.setText(`Description: ${payload.description}`);
-             } else {
-                 this.descriptionText.setText('Received empty description.');
-             }
-        }
+    private handleDescription(payload: { description: string }) {
+        console.log('Received description:', payload);
+        this.descriptionText.setText(payload.description);
     }
 
-    private handleError(payload: any) {
-        console.error('Received error from server:', payload.message || payload);
-        this.descriptionText.setText(`Error: ${payload.message || 'Unknown server error'}`);
-        this.stopPlayerMovement(); // Stop movement on error
+    private handleError(payload: { message: string }) {
+        console.error('Received error:', payload);
+        this.descriptionText.setText(`Error: ${payload.message}`);
+        this.descriptionText.setColor('#ff0000');
+        this.time.delayedCall(3000, () => { this.descriptionText.setColor('#ffffff'); });
     }
 
-    private handleDialogue(payload: any) {
+    private handleDialogue(payload: { speaker: string; line: string }) {
         console.log('Received dialogue:', payload);
-        const speaker = payload.speaker || 'System';
-        const line = payload.line || '';
-        
-        // Display dialogue in the description text area for now
-        // TODO: Implement a proper dialogue box UI
-        this.descriptionText.setText(`${speaker}: "${line}"`);
+        this.descriptionText.setText(`[${payload.speaker}]: ${payload.line}`);
+    }
 
-        // Stop player movement when dialogue starts
-        this.stopPlayerMovement(); 
+    private handleSceneChange(payload: { new_scene_id: string; new_description: string }) {
+        console.log('Received scene_change:', payload);
+
+        const config = this.cache.json.get('sceneConfig');
+        if (!config) {
+            console.error('Scene configuration not loaded!');
+            this.handleError({ message: 'Internal error: Scene config missing.' });
+            return;
+        }
+
+        const sceneData = config[payload.new_scene_id];
+        if (!sceneData) {
+            console.error(`Scene ID '${payload.new_scene_id}' not found in configuration!`);
+            this.handleError({ message: `Internal error: Unknown scene ID '${payload.new_scene_id}'.` });
+            return;
+        }
+
+        const backgroundKey = sceneData.background;
+        if (!backgroundKey) {
+            console.error(`Background key missing for scene ID '${payload.new_scene_id}' in configuration!`);
+            this.handleError({ message: `Internal error: Missing background for '${payload.new_scene_id}'.` });
+            return;
+        }
+
+        // Update background
+        console.log(`Changing background to: ${backgroundKey}`);
+        this.background.setTexture(backgroundKey);
+
+        // Recalculate scale and reposition background
+        const scaleX = this.cameras.main.width / this.background.width;
+        const scaleY = this.cameras.main.height / this.background.height;
+        const scale = Math.min(scaleX, scaleY);
+        this.background.setScale(scale);
+        this.background.setPosition(this.cameras.main.centerX, this.cameras.main.centerY);
+
+        // Update world bounds to match new background
+        const scaledWidth = this.background.width * this.background.scaleX;
+        const scaledHeight = this.background.height * this.background.scaleY;
+        const bgTopLeftX = this.cameras.main.centerX - scaledWidth / 2;
+        const bgTopLeftY = this.cameras.main.centerY - scaledHeight / 2;
+        this.physics.world.setBounds(bgTopLeftX, bgTopLeftY, scaledWidth, scaledHeight);
+
+        // Update description text
+        this.descriptionText.setText(payload.new_description);
+
+        // TODO: Reposition player/NPCs based on new scene
+        // For now, just place player roughly in center
+        this.player.setPosition(this.cameras.main.centerX, this.cameras.main.centerY + scaledHeight * 0.3);
+        this.stopPlayerMovement(); // Stop any lingering movement from old scene
     }
 
     private parseAndSendCommand(text: string) {

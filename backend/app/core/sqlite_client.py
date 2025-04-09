@@ -2,6 +2,7 @@ import aiosqlite
 import logging
 from .config import settings
 import json
+import os # Added import
 
 logger = logging.getLogger(__name__)
 
@@ -97,48 +98,75 @@ async def populate_initial_game_data():
     db = await get_db_connection()
     try:
         async with db.cursor() as cursor:
-            # Check if data might already exist (e.g., check scenes)
+            # --- Check if initial data might already exist ---
             await cursor.execute("SELECT COUNT(*) FROM scenes")
-            count = await cursor.fetchone()
-            if count[0] > 0:
-                 logger.info("Initial game data seems to exist. Skipping population.")
+            scene_count = await cursor.fetchone()
+            await cursor.execute("SELECT COUNT(*) FROM npcs")
+            npc_count = await cursor.fetchone()
+            # Add more checks if needed
+
+            if scene_count[0] > 0 and npc_count[0] > 0: # Check if both seem populated
+                 logger.info("Initial game data (scenes/NPCs) seems to exist. Skipping population.")
                  return
 
             logger.info("Populating initial game data...")
 
-            # -- Scenes --
-            await cursor.execute("INSERT OR IGNORE INTO scenes (scene_id, description, details_json) VALUES (?, ?, ?)", 
-                               ("scene_pod_interior", 
-                                "A cramped, messy living pod. Old tech, instant ramen cups, and a faint smell of ozone.", 
-                                json.dumps({"npcs": ["npc_clippy"], "objects": ["object_terminal", "item_laptop_old", "item_trophy_hackathon", "item_ramen_cup_empty"]})))
-            # Add scene_welfare_office, scene_printshop etc. later
+            # --- Load Scenes from JSON ---
+            # Construct path relative to this file (core/sqlite_client.py) -> ../data/scenes.json
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            json_path = os.path.join(current_dir, '..', 'data', 'scenes.json')
 
-            # -- NPCs --
+            if not os.path.exists(json_path):
+                logger.error(f"Scene data file not found at {json_path}. Cannot populate scenes.")
+            else:
+                try:
+                    with open(json_path, 'r', encoding='utf-8') as f:
+                        scenes_data = json.load(f)
+
+                    logger.info(f"Loading scene data from {json_path}...")
+                    for scene_id, scene_info in scenes_data.items():
+                        description = scene_info.get("description", "No description provided.")
+                        # Ensure details is always a dict, then dump to JSON string
+                        details = scene_info.get("details", {})
+                        details_json = json.dumps(details)
+
+                        await cursor.execute(
+                            "INSERT OR IGNORE INTO scenes (scene_id, description, details_json) VALUES (?, ?, ?)",
+                            (scene_id, description, details_json)
+                        )
+                    logger.info(f"Successfully processed {len(scenes_data)} scenes from JSON.")
+
+                except json.JSONDecodeError as e:
+                     logger.error(f"Error decoding JSON from {json_path}: {e}")
+                except Exception as e:
+                     logger.error(f"Error processing scene file {json_path}: {e}", exc_info=True)
+
+            # -- NPCs (Keep existing logic for now) --
             await cursor.execute("INSERT OR IGNORE INTO npcs (npc_id, persona, current_scene_id, state_json, memory_json) VALUES (?, ?, ?, ?, ?)",
-                               ("npc_clippy", 
+                               ("npc_clippy",
                                 "A glitchy, overly helpful AI assistant resembling a paperclip from the late 90s/early 2000s. Expresses emotion via emoticons/ASCII art. Split loyalties between Dex and core programming. Wants to understand 'humanity'. Knows basic hacking, NeuroStream public net (limited), outdated software trivia.",
-                                "scene_pod_interior",
+                                "pod_interior", # Use the key from scenes.json
                                 json.dumps({"loyalty_dex": 0, "current_mode": "helpful"}),
                                 json.dumps({"short_term": [], "medium_term": []})))
             # Add npc_cassie, npc_omnius etc. later
 
-            # -- Objects -- 
+            # -- Objects (Keep existing logic for now) --
             await cursor.execute("INSERT OR IGNORE INTO objects (object_id, description, scene_id, state_json) VALUES (?, ?, ?, ?)",
-                               ("object_terminal", 
-                                "An old, bulky computer terminal. The screen is dark.", 
-                                "scene_pod_interior", 
+                               ("object_terminal",
+                                "An old, bulky computer terminal. The screen is dark.",
+                                "pod_interior", # Use the key from scenes.json
                                 json.dumps({"is_powered": False})))
             await cursor.execute("INSERT OR IGNORE INTO objects (object_id, description, scene_id) VALUES (?, ?, ?)",
-                               ("item_laptop_old", "Dex's beat-up laptop from the 2020s. Covered in stickers.", "scene_pod_interior")) # Inventory items also listed as objects initially
+                               ("item_laptop_old", "Dex's beat-up laptop from the 2020s. Covered in stickers.", "pod_interior")) # Inventory items also listed as objects initially
             await cursor.execute("INSERT OR IGNORE INTO objects (object_id, description, scene_id) VALUES (?, ?, ?)",
-                               ("item_trophy_hackathon", "A dusty plastic trophy from a forgotten hackathon.", "scene_pod_interior"))
+                               ("item_trophy_hackathon", "A dusty plastic trophy from a forgotten hackathon.", "pod_interior"))
             await cursor.execute("INSERT OR IGNORE INTO objects (object_id, description, scene_id) VALUES (?, ?, ?)",
-                               ("item_ramen_cup_empty", "An empty instant ramen cup. Classic.", "scene_pod_interior"))
-            
+                               ("item_ramen_cup_empty", "An empty instant ramen cup. Classic.", "pod_interior"))
+
             await db.commit()
-            logger.info("Initial game data populated.")
+            logger.info("Initial game data population attempt complete.")
 
     except Exception as e:
-        logger.error(f"Failed to populate initial game data: {e}", exc_info=True)
+        logger.error(f"Failed during initial game data population: {e}", exc_info=True)
         await db.rollback() # Rollback changes on error
         # Decide if this error should prevent startup 

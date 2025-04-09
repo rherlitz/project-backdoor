@@ -1,0 +1,20 @@
+{
+    "pod_interior": {
+      "background": "bg_pod_interior"
+    },
+    "pod_exterior": {
+      "background": "bg_pod_exterior"
+    },
+    "north_terrain": {
+      "background": "bg_north_terrain"
+    },
+    "south_terrain": {
+      "background": "bg_south_terrain"
+    },
+    "east_terrain": {
+      "background": "bg_east_terrain"
+    },
+    "alley": {
+        "background": "alley_bg"
+    }
+}
